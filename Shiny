@@ -1,0 +1,96 @@
+packages <- c("shiny","DT","data.table",
+              "dplyr","matrixStats","ggplot2","reshape") 
+lapply(packages, require, character.only = TRUE)
+
+ui <- fluidPage(
+  titlePanel("R Shiny Assignment"),
+  
+  sidebarLayout(
+    sidebarPanel(
+      numericInput("LY", "Loss Year:",
+                   value = 0),
+      numericInput("DY", "Development Year:", 
+                   min = 1,
+                   value = 0),
+      numericInput("Claims", "Amount of Claims Paid:",
+                   min = 0,
+                   value = 0),
+      numericInput("TailFactor", "Tail Factor",
+                   min = 0,
+                   value = 1,
+                   step=0.1),
+      actionButton("Submit", "Submit"),
+      actionButton("Plot", "Plot"),
+      width=3
+    ),
+    
+    mainPanel(
+      tabsetPanel(
+        tabPanel("Data Table",dataTableOutput("input")), 
+        tabPanel("Projection", dataTableOutput("proj")), 
+        tabPanel("Graph",plotOutput("myplot")) 
+      )
+    )
+  )
+)
+
+server <- function(input, output, session){
+  t<- reactiveValues(df = data.frame(LY= as.numeric(), DY = as.numeric(),Claims = as.numeric(), check.names = FALSE))
+  cumulative <- reactiveValues(cumulative_data = data.frame(LY = as.numeric(), Claims_1 = as.numeric(),   Claims_2 = as.numeric(), Claims_3 = as.numeric(), check.names = FALSE))
+  cal <- reactiveValues(df = data.frame(LY= as.numeric(), Claims_1 = as.numeric(),Claims_2 = as.numeric(), Claims_3 = as.numeric(), Claims_4 = as.numeric(), check.names = FALSE))
+  
+  #Observe event Input
+  observeEvent(input$Submit, {
+    addrow <- data.frame(LY= input$LY, DY = input$DY,Claims = input$Claims, check.names = FALSE)
+    t$data <- rbind(t$data, addrow)
+    t$data <- dplyr::arrange(t$data, LY, DY)
+  })
+  
+  #Input output
+  output$input <- renderDataTable({
+    req(t$data)
+    datatable(t$data,colnames = c('Loss Year', 'Development Year', 'Amount of Claims Paid'),  options = list(dom = 't'))  %>% formatCurrency('Claims')
+  })
+  
+  #Observe event Calculate
+  observeEvent(input$Plot, {
+    req(t$data)
+    cumulative_data <- t$data
+    cumu_wide <- reshape(cumulative_data, idvar = "LY", timevar = "DY",  v.names = c("Claims"),  direction = "wide")
+    cumu_wide[-1] <- rowCumsums(as.matrix(cumu_wide[-1]))
+    cumulative$value <- cumu_wide
+    setDT(cumulative$value)
+    datafra <- cumulative$value
+    numrow <- NROW(datafra)
+    
+    for (j in 3L:NCOL(datafra)) {
+      row_i <- numrow - j + 3L
+      set(
+        datafra, i = numrow:row_i, j = j,
+        value = sum(datafra[1L:(row_i - 1L), ..j]) /
+          sum(datafra[1L:(row_i - 1L), j - 1L, with = FALSE]) *
+          datafra[numrow:row_i, j - 1L, with = FALSE]
+      )
+    }
+    datafra$"Claims_4" <- datafra[,4] * input$TailFactor
+    cal$low <- datafra
+  })
+  
+  #Calculation output
+  output$proj <- renderDataTable({
+    req(cal$low)
+    datatable(cal$low, options = list(dom = 't'))  %>% formatCurrency(c(2:5))
+  })
+  
+  #Plot output
+  output$myplot <- renderPlot({
+    req(cal$low)
+    dt <- reshape(data = cal$low, direction = "long", idvar = "Ly", varying = list(2:5), v.names = "value")
+    dt <- dt[with(dt, order(dt$"LY"))]
+    names(dt) <- c("LossYear", "Year", "Amount", "Remove")
+    dt[, c("Remove"):=NULL]
+    ggplot(data=dt,aes(x=Year,y=Amount)) + geom_line(aes(group=LossYear, color=factor(LossYear))) +
+    labs(x="Development Year",y="Amount ($)",color="Loss Years\n", title="Cumulative Paid Claims ($)")+geom_text(aes(label=Amount),size=2.8)
+  })
+}
+shinyApp(ui = ui, server = server)
